@@ -11,47 +11,53 @@
 //!
 
 use libc::{self, c_int, c_uint};
-use neli;
-use neli::consts::nl::{NlmF, Rtm};
-use neli::consts::rtnl::{Arphrd, Iff, RtAddrFamily};
-use neli::consts::socket::NlFamily;
-use neli::consts::NlType;
-use neli::err::NlError;
-use neli::nl::Nlmsghdr;
-use neli::rtnl::{Ifinfomsg, Rtattrs};
-use neli::socket::*;
-use nix;
-use nix::net::if_::if_nametoindex;
-use std::fmt::Debug;
+use neli::{
+    consts::{
+        nl::{NlmF, NlmFFlags, NlType},
+        rtnl::{Arphrd, RtAddrFamily, Rtm},
+        socket::NlFamily,
+    },
+    err::NlError,
+    nl::{Nlmsghdr, NlPayload},
+    utils::U32Bitmask,
+    rtnl::Ifinfomsg,
+    types::RtBuffer,
+    socket::*,
+    Nl,
+};
+use nix::{self, net::if_::if_nametoindex};
+use std::{
+    result,
+    fmt::Debug,
+};
+
+type NlResult<T> = result::Result<T, NlError>;
 
 /// Sends a netlink message down a netlink socket, and checks if an ACK was
 /// properly received.
-fn send_and_read_ack<T, P>(sock: &mut NlSocket, msg: Nlmsghdr<T, P>) -> Result<(), NlError>
+fn send_and_read_ack<T, P>(sock: &mut NlSocketHandle, msg: Nlmsghdr<T, P>) -> NlResult<()>
 where
     T: neli::Nl + NlType + Debug,
     P: neli::Nl + Debug,
 {
-    sock.send_nl(msg)?;
-
-    println!("Message sent, waiting for ACK");
-
-    // receive pending message
-    sock.recv_ack()?;
-
-    println!("ACK received");
-
+    sock.send(msg)?;
+    // TODO: Implement this
+    //sock.recv_ack()?;
     Ok(())
 }
 
 /// Opens a new netlink socket, bound to this process' PID
-fn open_nl_route_socket() -> Result<NlSocket, NlError> {
+fn open_nl_route_socket() -> NlResult<NlSocketHandle> {
     // retrieve PID
     let pid = unsafe { libc::getpid() } as u32;
 
     // open and bind socket
     // groups is set to None(0), because we want no notifications
-    let sock = NlSocket::connect(NlFamily::Route, Some(pid), None, false)?;
-
+    let sock = NlSocketHandle::connect(
+        NlFamily::Route,
+        Some(pid),
+        U32Bitmask::empty()
+    )?;
     Ok(sock)
 }
 
@@ -67,66 +73,59 @@ impl CanInterface {
     /// Open CAN interface by name
     ///
     /// Similar to `open_if`, but looks up the device by name instead
-    pub fn open(ifname: &str) -> Result<CanInterface, nix::Error> {
+    pub fn open(ifname: &str) -> result::Result<Self, nix::Error> {
         let if_index = if_nametoindex(ifname)?;
-        Ok(CanInterface::open_if(if_index))
+        Ok(Self::open_iface(if_index))
     }
 
     /// Open CAN interface
     ///
     /// Creates a new `CanInterface` instance. No actual "opening" is necessary
     /// or performed when calling this function.
-    pub fn open_if(if_index: c_uint) -> CanInterface {
-        CanInterface { if_index: if_index }
+    pub fn open_iface(if_index: c_uint) -> Self {
+        Self { if_index, }
+    }
+
+    /// Sends an info message
+    fn send_info_msg(info: Ifinfomsg) -> NlResult<()> {
+        let mut nl = open_nl_route_socket()?;
+
+        // prepare message
+        let hdr = Nlmsghdr::new(
+            None,
+            Rtm::Newlink,
+            NlmFFlags::new(&[NlmF::Request, NlmF::Ack]),
+            None,
+            None,
+            NlPayload::Payload(info),
+        );
+        // send the message
+        send_and_read_ack(&mut nl, hdr)
     }
 
     /// Bring down CAN interface
     ///
     /// Use a netlink control socket to set the interface status to "down".
-    pub fn bring_down(&self) -> Result<(), NlError> {
-        let mut nl = open_nl_route_socket()?;
-
-        // settings flags to 0 and change to IFF_UP will disable the IFF_UP flag
+    pub fn bring_down(&self) -> NlResult<()> {
         let info = Ifinfomsg::down(
             RtAddrFamily::Unspecified,
             Arphrd::Netrom,
             self.if_index as c_int,
-            Rtattrs::empty(),
+            RtBuffer::new()
         );
-
-        // prepare message
-        let msg = Nlmsghdr::new(
-            None,
-            Rtm::Newlink,
-            vec![NlmF::Request, NlmF::Ack],
-            None,
-            Some(0),
-            info,
-        );
-        // send the message
-        send_and_read_ack(&mut nl, msg)
+        Self::send_info_msg(info)
     }
 
     /// Bring up CAN interface
     ///
     /// Brings the interface up by settings its "up" flag enabled via netlink.
     pub fn bring_up(&self) -> Result<(), NlError> {
-        let mut nl = open_nl_route_socket()?;
-
         let info = Ifinfomsg::up(
             RtAddrFamily::Unspecified,
             Arphrd::Netrom,
             self.if_index as c_int,
-            Rtattrs::empty(),
+            RtBuffer::new()
         );
-        let msg = Nlmsghdr::new(
-            None,
-            Rtm::Newlink,
-            vec![NlmF::Request, NlmF::Ack],
-            None,
-            Some(0),
-            info,
-        );
-        send_and_read_ack(&mut nl, msg)
+        Self::send_info_msg(info)
     }
 }
