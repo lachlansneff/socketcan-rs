@@ -23,7 +23,6 @@ use neli::{
     rtnl::Ifinfomsg,
     types::RtBuffer,
     socket::*,
-    Nl,
 };
 use nix::{self, net::if_::if_nametoindex};
 use std::{
