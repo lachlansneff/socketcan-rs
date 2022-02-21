@@ -393,7 +393,7 @@ impl CanSocket {
 
         let mut ts = timespec { tv_sec: 0, tv_nsec: 0 };
         let rval = unsafe {
-            libc::ioctl(self.fd, SIOCGSTAMPNS as c_ulong, &mut ts as *mut timespec)
+            libc::ioctl(self.fd, SIOCGSTAMPNS as _, &mut ts as *mut timespec)
         };
 
         if rval == -1 {
